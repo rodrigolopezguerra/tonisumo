@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sumo Split Screen - PC & Tablet</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Segoe UI', sans-serif; touch-action: none; user-select: none; }
+        
+        /* UI LAYOUT */
+        #game-ui {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;
+            display: flex;
+        }
+        
+        .player-view {
+            position: relative;
+            width: 50%;
+            height: 100%;
+            border-right: 2px solid white;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+        .player-view:last-child { border-right: none; }
+
+        /* SCORE */
+        .score {
+            position: absolute; top: 20px; width: 100%; text-align: center;
+            font-size: 40px; font-weight: 900; color: white; 
+            text-shadow: 0 2px 4px black; z-index: 10;
+        }
+
+        /* ARROW INDICATOR */
+        .arrow-container {
+            position: absolute; top: 50%; left: 50%; 
+            transform: translate(-50%, -50%);
+            width: 200px; height: 200px;
+            display: none; /* Se activa con JS */
+            opacity: 0.7;
+        }
+        .arrow {
+            position: absolute; top: 0; left: 50%;
+            width: 0; height: 0;
+            transform: translateX(-50%);
+            border-left: 15px solid transparent;
+            border-right: 15px solid transparent;
+            border-bottom: 30px solid yellow;
+        }
+
+        /* CONTROLS */
+        .controls-area {
+            position: absolute; bottom: 30px; width: 160px; height: 160px;
+            display: grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr 1fr;
+            pointer-events: auto;
+        }
+        .p1-ctrl { left: 20px; }
+        .p2-ctrl { right: 20px; }
+
+        .dpad-btn {
+            background: rgba(255,255,255,0.15);
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 8px;
+            display: flex; justify-content: center; align-items: center;
+            font-size: 24px; transition: background 0.1s;
+        }
+        .dpad-btn:active, .dpad-btn.active { background: rgba(255,255,255,0.5); }
+        
+        .btn-up { grid-column: 2; grid-row: 1; }
+        .btn-left { grid-column: 1; grid-row: 2; }
+        .btn-down { grid-column: 2; grid-row: 2; }
+        .btn-right { grid-column: 3; grid-row: 2; }
+
+        #game-msg {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 50px; color: white; font-weight: bold; background: rgba(0,0,0,0.8);
+            padding: 20px; border-radius: 10px; display: none; z-index: 99; text-align: center;
+        }
+        
+        /* Instrucciones PC */
+        #pc-help {
+            position: absolute; bottom: 10px; width: 100%; text-align: center; color: rgba(255,255,255,0.5); font-size: 12px; pointer-events: none;
+        }
+
+    </style>
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+</head>
+<body>
+
+    <div id="game-msg">GANADOR</div>
+
+    <div id="game-ui">
+        <div class="player-view" id="view-p1">
+            <div class="score" style="color:#ff5555">P1: <span id="s1">0</span></div>
+            <div class="arrow-container" id="arrow-p1"><div class="arrow"></div></div>
+            <div class="controls-area p1-ctrl">
+                <div class="dpad-btn btn-up" data-key="p1-up">W</div>
+                <div class="dpad-btn btn-left" data-key="p1-left">A</div>
+                <div class="dpad-btn btn-down" data-key="p1-down">S</div>
+                <div class="dpad-btn btn-right" data-key="p1-right">D</div>
+            </div>
+        </div>
+
+        <div class="player-view" id="view-p2">
+            <div class="score" style="color:#5555ff">P2: <span id="s2">0</span></div>
+            <div class="arrow-container" id="arrow-p2"><div class="arrow"></div></div>
+            <div class="controls-area p2-ctrl">
+                <div class="dpad-btn btn-up" data-key="p2-up">⬆️</div>
+                <div class="dpad-btn btn-left" data-key="p2-left">⬅️</div>
+                <div class="dpad-btn btn-down" data-key="p2-down">⬇️</div>
+                <div class="dpad-btn btn-right" data-key="p2-right">➡️</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="pc-help">P1: W,A,S,D | P2: Flechas</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- CONFIGURACIÓN ---
+        const CONF = { 
+            gridSize: 1000, 
+            moveSpeed: 300, 
+            rotSpeed: 3.5, 
+            knockForce: 1000,
+            camDist: 180,  // Distancia atrás
+            camHeight: 120 // Altura
+        };
+
+        let scene, renderer;
+        let cam1, cam2; // Dos cámaras
+        let p1, p2;
+        let clock = new THREE.Clock();
+        let scores = { p1: 0, p2: 0 };
+        let inputs = { p1: {}, p2: {} };
+
+        // Flechas UI
+        const arrowP1 = document.getElementById('arrow-p1');
+        const arrowP2 = document.getElementById('arrow-p2');
+
+        function init() {
+            // ESCENA
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x202020);
+            scene.fog = new THREE.Fog(0x202020, 200, 900);
+
+            // RENDERER
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setScissorTest(true); // Importante para split screen
+            document.body.appendChild(renderer.domElement);
+
+            // CÁMARAS (FOV 60)
+            const aspect = (window.innerWidth / 2) / window.innerHeight;
+            cam1 = new THREE.PerspectiveCamera(60, aspect, 1, 2000);
+            cam2 = new THREE.PerspectiveCamera(60, aspect, 1, 2000);
+
+            // LUCES
+            const am = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(am);
+            const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+            dir.position.set(50, 100, 50);
+            scene.add(dir);
+
+            // SUELO / GRILLA
+            const grid = new THREE.GridHelper(CONF.gridSize, 20, 0x555555, 0x333333);
+            scene.add(grid);
+            const plane = new THREE.Mesh(
+                new THREE.PlaneGeometry(CONF.gridSize, CONF.gridSize),
+                new THREE.MeshBasicMaterial({ color: 0x111111, side: THREE.DoubleSide })
+            );
+            plane.rotation.x = -Math.PI/2;
+            plane.position.y = -1;
+            scene.add(plane);
+
+            // JUGADORES
+            p1 = createCharacter(0xff3333, -200); // Rojo
+            p2 = createCharacter(0x3333ff, 200);  // Azul
+            // P2 mira al lado opuesto al inicio
+            p2.rotation.y = Math.PI; 
+
+            setupTouchControls();
+            setupKeyboardControls();
+            window.addEventListener('resize', onResize);
+            animate();
+        }
+
+        function createCharacter(color, x) {
+            const group = new THREE.Group();
+
+            // Cuerpo (Cilindro/Cápsula simple)
+            const geo = new THREE.CapsuleGeometry(15, 30, 4, 8);
+            const mat = new THREE.MeshStandardMaterial({ color: color });
+            const body = new THREE.Mesh(geo, mat);
+            body.position.y = 30; 
+            
+            // "Ojos" para saber dónde mira
+            const eyes = new THREE.Mesh(new THREE.BoxGeometry(20, 5, 10), new THREE.MeshBasicMaterial({color:0xffffff}));
+            eyes.position.set(0, 45, 10); 
+            
+            group.add(body);
+            group.add(eyes);
+            group.position.set(x, 0, 0);
+
+            group.userData = { 
+                vel: new THREE.Vector3(), 
+                knocked: false, 
+                timer: 0,
+                startPos: new THREE.Vector3(x, 0, 0),
+                startRot: x > 0 ? Math.PI : 0
+            };
+
+            scene.add(group);
+            return group;
+        }
+
+        function updatePhysics(delta) {
+            [p1, p2].forEach(p => {
+                const input = (p === p1) ? inputs.p1 : inputs.p2;
+                const data = p.userData;
+
+                if(data.knocked) {
+                    // Fricción de vuelo
+                    data.vel.multiplyScalar(0.94);
+                    data.timer -= delta;
+                    if(data.timer <= 0) data.knocked = false;
+                    p.position.addScaledVector(data.vel, delta);
+                } else {
+                    // Movimiento "Tanque"
+                    if(input.left) p.rotation.y += CONF.rotSpeed * delta;
+                    if(input.right) p.rotation.y -= CONF.rotSpeed * delta;
+
+                    const fwd = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0,1,0), p.rotation.y);
+                    
+                    if(input.up) p.position.addScaledVector(fwd, CONF.moveSpeed * delta);
+                    if(input.down) p.position.addScaledVector(fwd, -CONF.moveSpeed * delta);
+                }
+
+                // Gravedad simple si se sale
+                if(Math.abs(p.position.x) > CONF.gridSize/2 || Math.abs(p.position.z) > CONF.gridSize/2) {
+                    p.position.y -= 400 * delta;
+                } else {
+                    p.position.y = 0;
+                }
+            });
+
+            // Colisiones
+            if(p1.position.y > -50 && p2.position.y > -50) {
+                const dist = p1.position.distanceTo(p2.position);
+                if(dist < 40) {
+                    const angle1 = Math.random() * Math.PI * 2;
+                    const angle2 = Math.random() * Math.PI * 2;
+                    
+                    const knock = (player, ang) => {
+                        player.userData.knocked = true;
+                        player.userData.timer = 1.0;
+                        player.userData.vel.set(Math.sin(ang), 0.5, Math.cos(ang)).multiplyScalar(CONF.knockForce);
+                    };
+                    knock(p1, angle1);
+                    knock(p2, angle2);
+                }
+            }
+
+            // Reinicio
+            if(p1.position.y < -200) resetRound('p2');
+            if(p2.position.y < -200) resetRound('p1');
+        }
+
+        function updateCameras(delta) {
+            const follow = (cam, target) => {
+                const relativeOffset = new THREE.Vector3(0, CONF.camHeight, -CONF.camDist);
+                relativeOffset.applyAxisAngle(new THREE.Vector3(0,1,0), target.rotation.y);
+                const dest = target.position.clone().add(relativeOffset);
+                cam.position.lerp(dest, 0.1);
+                cam.lookAt(target.position.clone().add(new THREE.Vector3(0, 20, 0)));
+            };
+            follow(cam1, p1);
+            follow(cam2, p2);
+        }
+
+        function updateArrows() {
+            const checkArrow = (cam, me, enemy, arrowEl) => {
+                cam.updateMatrixWorld();
+                cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
+                const frustum = new THREE.Frustum();
+                frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+                
+                if (frustum.containsPoint(enemy.position)) {
+                    arrowEl.style.display = 'none';
+                    return;
+                }
+
+                arrowEl.style.display = 'block';
+                const dir = new THREE.Vector3().subVectors(enemy.position, me.position);
+                const angleEnemy = Math.atan2(dir.x, dir.z);
+                const camDir = new THREE.Vector3();
+                cam.getWorldDirection(camDir);
+                const angleCam = Math.atan2(camDir.x, camDir.z);
+                let diff = angleEnemy - angleCam;
+                const deg = THREE.MathUtils.radToDeg(-diff);
+                arrowEl.style.transform = `translate(-50%, -50%) rotate(${deg}deg) translateY(-80px)`;
+            };
+
+            checkArrow(cam1, p1, p2, arrowP1);
+            checkArrow(cam2, p2, p1, arrowP2);
+        }
+
+        function resetRound(winner) {
+            const msg = document.getElementById('game-msg');
+            msg.innerText = (winner === 'p1' ? "ROJO" : "AZUL") + " GANA";
+            msg.style.display = 'block';
+            scores[winner]++;
+            document.getElementById('s1').innerText = scores.p1;
+            document.getElementById('s2').innerText = scores.p2;
+
+            [p1, p2].forEach(p => {
+                p.position.copy(p.userData.startPos);
+                p.rotation.set(0, p.userData.startRot, 0);
+                p.userData.vel.set(0,0,0);
+                p.userData.knocked = false;
+            });
+            cam1.position.set(p1.position.x, CONF.camHeight, p1.position.z - CONF.camDist);
+            cam2.position.set(p2.position.x, CONF.camHeight, p2.position.z + CONF.camDist);
+
+            setTimeout(() => { msg.style.display = 'none'; }, 1500);
+        }
+
+        function render() {
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            renderer.setScissor(0, 0, w/2, h);
+            renderer.setViewport(0, 0, w/2, h);
+            renderer.render(scene, cam1);
+            renderer.setScissor(w/2, 0, w/2, h);
+            renderer.setViewport(w/2, 0, w/2, h);
+            renderer.render(scene, cam2);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            updatePhysics(delta);
+            updateCameras(delta);
+            updateArrows();
+            render();
+        }
+
+        // --- CONTROLES ---
+        
+        // Helper para actualizar UI al pulsar teclas
+        function setInput(player, action, state) {
+            inputs[player][action] = state;
+            const btn = document.querySelector(`.dpad-btn[data-key="${player}-${action}"]`);
+            if(btn) {
+                if(state) btn.classList.add('active');
+                else btn.classList.remove('active');
+            }
+        }
+
+        function setupTouchControls() {
+            document.querySelectorAll('.dpad-btn').forEach(b => {
+                const k = b.dataset.key.split('-'); // [p1, up]
+                b.addEventListener('touchstart', (e)=>{e.preventDefault(); setInput(k[0], k[1], true); }, {passive:false});
+                b.addEventListener('touchend', (e)=>{e.preventDefault(); setInput(k[0], k[1], false); });
+                b.addEventListener('mousedown', ()=>{setInput(k[0], k[1], true)});
+                b.addEventListener('mouseup', ()=>{setInput(k[0], k[1], false)});
+            });
+        }
+
+        function setupKeyboardControls() {
+            const keyMap = {
+                // P1 (WASD)
+                'KeyW': ['p1', 'up'],
+                'KeyS': ['p1', 'down'],
+                'KeyA': ['p1', 'left'],
+                'KeyD': ['p1', 'right'],
+                // P2 (Flechas)
+                'ArrowUp': ['p2', 'up'],
+                'ArrowDown': ['p2', 'down'],
+                'ArrowLeft': ['p2', 'left'],
+                'ArrowRight': ['p2', 'right']
+            };
+
+            window.addEventListener('keydown', (e) => {
+                if(keyMap[e.code]) {
+                    const [p, a] = keyMap[e.code];
+                    setInput(p, a, true);
+                }
+            });
+
+            window.addEventListener('keyup', (e) => {
+                if(keyMap[e.code]) {
+                    const [p, a] = keyMap[e.code];
+                    setInput(p, a, false);
+                }
+            });
+        }
+
+        function onResize() {
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            renderer.setSize(w, h);
+            const aspect = (w/2) / h;
+            cam1.aspect = aspect; cam1.updateProjectionMatrix();
+            cam2.aspect = aspect; cam2.updateProjectionMatrix();
+        }
+
+        init();
+    </script>
+</body>
+</html>
